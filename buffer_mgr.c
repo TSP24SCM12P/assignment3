@@ -68,30 +68,30 @@ RC initBufferPool(BM_BufferPool *const bm, const char *const pageFileName,
     metadata->numRead = 0;
     metadata->numWrite = 0;
     RC result = openPageFile((char *)pageFileName, &(metadata->pageFile));
-    if (result == RC_OK)
-    {
-        initHashTable(pageTabe, PAGE_TABLE_SIZE);
-        metadata->pageFrames = (BM_PageFrame *)malloc(sizeof(BM_PageFrame) * numPages);
-        for (int i = 0; i < numPages; i++)
-        {
-            metadata->pageFrames[i].frameIndex = i;
-            metadata->pageFrames[i].data = (char *)malloc(PAGE_SIZE);
-            metadata->pageFrames[i].fixCount = 0;
-            metadata->pageFrames[i].dirty = false;
-            metadata->pageFrames[i].occupied = false;
-            metadata->pageFrames[i].timeStamp = getTimeStamp(metadata);
-        }
-        bm->mgmtData = (void *)metadata;
-        bm->numPages = numPages;
-        bm->pageFile = (char *)&(metadata->pageFile);
-        bm->strategy = strategy;
-        return RC_OK;
-    }
-    else
-    {
-        // in case the file can't be open, set the metadata to NULL
-        bm->mgmtData = NULL;
-        return result;
+
+    switch (result) {
+        case RC_OK:
+            initHashTable(pageTabe, PAGE_TABLE_SIZE);
+            metadata->pageFrames = (BM_PageFrame *)malloc(sizeof(BM_PageFrame) * numPages);
+            for (int i = 0; i < numPages; i++)
+            {
+                metadata->pageFrames[i].frameIndex = i;
+                metadata->pageFrames[i].data = (char *)malloc(PAGE_SIZE);
+                metadata->pageFrames[i].fixCount = 0;
+                metadata->pageFrames[i].dirty = false;
+                metadata->pageFrames[i].occupied = false;
+                metadata->pageFrames[i].timeStamp = getTimeStamp(metadata);
+            }
+            bm->mgmtData = (void *)metadata;
+            bm->numPages = numPages;
+            bm->pageFile = (char *)&(metadata->pageFile);
+            bm->strategy = strategy;
+            return RC_OK;
+
+        default:
+            // Handle all other cases where the page file cannot be opened
+            bm->mgmtData = NULL;
+            return result;
     }
 }
 
@@ -105,26 +105,35 @@ RC shutdownBufferPool(BM_BufferPool *const bm)
         HT_TableHandle *pageTabe = &(metadata->pageTable);
         
         // "It is an error to shutdown a buffer pool that has pinned pages."
-        for (int i = 0; i < bm->numPages; i++)
+        int i = 0; // Initialize loop counter for while loop
+        while (i < bm->numPages)
         {
             if (pageFrames[i].fixCount > 0) return RC_WRITE_FAILED;
+            i++; // Increment loop counter
         }
+        
         forceFlushPool(bm);
-        for (int i = 0; i < bm->numPages; i++)
+
+        i = 0; // Reset loop counter for next while loop
+        while (i < bm->numPages)
         {
             // free each page frame's data
             free(pageFrames[i].data);
+            i++; // Increment loop counter
         }
+
         closePageFile(&(metadata->pageFile));
 
         // free the pageFrames array and metadata
         freeHashTable(pageTabe);
         free(pageFrames);
         free(metadata);
+        bm->mgmtData = NULL; // Clear management data pointer
         return RC_OK;
     }
     else return RC_FILE_HANDLE_NOT_INIT;
 }
+
 
 RC forceFlushPool(BM_BufferPool *const bm)
 {
@@ -133,7 +142,8 @@ RC forceFlushPool(BM_BufferPool *const bm)
     {
         BM_Metadata *metadata = (BM_Metadata *)bm->mgmtData;
         BM_PageFrame *pageFrames = metadata->pageFrames;
-        for (int i = 0; i < bm->numPages; i++)
+        int i = 0; // Initialize loop counter for while loop
+        while (i < bm->numPages)
         {
             // write the occupied, dirty, and unpinned pages to disk
             if (pageFrames[i].occupied && pageFrames[i].dirty && pageFrames[i].fixCount == 0)
@@ -145,6 +155,7 @@ RC forceFlushPool(BM_BufferPool *const bm)
                 // clear the dirty bool
                 pageFrames[i].dirty = false;
             }
+            i++; // Increment loop counter
         }
         return RC_OK;
     }
@@ -164,17 +175,24 @@ RC markDirty (BM_BufferPool *const bm, BM_PageHandle *const page)
         int frameIndex;
 
         // get the mapped frameIndex from pageNum
-        if (getValue(pageTabe, page->pageNum, &frameIndex) == 0)
+        int getValueResult = getValue(pageTabe, page->pageNum, &frameIndex);
+        switch (getValueResult) 
         {
-            pageFrames[frameIndex].timeStamp = getTimeStamp(metadata);
+            case 0:
+                pageFrames[frameIndex].timeStamp = getTimeStamp(metadata);
 
-            // set dirty bool
-            pageFrames[frameIndex].dirty = true;
-            return RC_OK;
+                // set dirty bool
+                pageFrames[frameIndex].dirty = true;
+                return RC_OK;
+
+            default:
+                return RC_IM_KEY_NOT_FOUND;
         }
-        else return RC_IM_KEY_NOT_FOUND;
     }
-    else return RC_FILE_HANDLE_NOT_INIT;
+    else 
+    {
+        return RC_FILE_HANDLE_NOT_INIT;
+    }
 }
 
 RC unpinPage (BM_BufferPool *const bm, BM_PageHandle *const page)
@@ -188,19 +206,27 @@ RC unpinPage (BM_BufferPool *const bm, BM_PageHandle *const page)
         int frameIndex;
 
         // get the mapped frameIndex from pageNum
-        if (getValue(pageTabe, page->pageNum, &frameIndex) == 0)
+        int getValueResult = getValue(pageTabe, page->pageNum, &frameIndex);
+        switch (getValueResult) 
         {
-            pageFrames[frameIndex].timeStamp = getTimeStamp(metadata);
+            case 0:
+                pageFrames[frameIndex].timeStamp = getTimeStamp(metadata);
 
-            // decrement (not below 0)
-            pageFrames[frameIndex].fixCount--;
-            if (pageFrames[frameIndex].fixCount < 0)
-                pageFrames[frameIndex].fixCount = 0;
-            return RC_OK;
+                // decrement fixCount but ensure it does not drop below 0
+                if (pageFrames[frameIndex].fixCount > 0)
+                {
+                    pageFrames[frameIndex].fixCount--;
+                }
+                return RC_OK;
+
+            default:
+                return RC_IM_KEY_NOT_FOUND;
         }
-        else return RC_IM_KEY_NOT_FOUND;
     }
-    else return RC_FILE_HANDLE_NOT_INIT;
+    else 
+    {
+        return RC_FILE_HANDLE_NOT_INIT;
+    }
 }
 
 RC forcePage (BM_BufferPool *const bm, BM_PageHandle *const page)
@@ -237,151 +263,188 @@ RC forcePage (BM_BufferPool *const bm, BM_PageHandle *const page)
 
 RC pinPage (BM_BufferPool *const bm, BM_PageHandle *const page, const PageNumber pageNum)
 {
-    if (bm->mgmtData != NULL) 
+    // Switch case for checking if management data is initialized
+    switch (bm->mgmtData != NULL) 
     {
-        BM_Metadata *metadata = (BM_Metadata *)bm->mgmtData;
-        BM_PageFrame *pageFrames = metadata->pageFrames;
-        HT_TableHandle *pageTabe = &(metadata->pageTable);
-        int frameIndex;
-
-        // make sure the pageNum is not negative
-        if (pageNum >= 0) 
+        case true:
         {
-            // check if page is already in a frame and get the mapped frameIndex from pageNum
-            if (getValue(pageTabe, pageNum, &frameIndex) == 0)
-            {
-                pageFrames[frameIndex].timeStamp = getTimeStamp(metadata);
-                pageFrames[frameIndex].fixCount++;
-                page->data = pageFrames[frameIndex].data;
-                page->pageNum = pageNum;
-                return RC_OK;
-            }
-            else 
-            {
-                // use specified replacement strategy
-                BM_PageFrame *pageFrame;
-                if (bm->strategy == RS_FIFO)
-                    pageFrame = replacementFIFO(bm);
-                else // if (bm->strategy == RS_LRU)
-                    pageFrame = replacementLRU(bm);
+            BM_Metadata *metadata = (BM_Metadata *)bm->mgmtData;
+            BM_PageFrame *pageFrames = metadata->pageFrames;
+            HT_TableHandle *pageTabe = &(metadata->pageTable);
+            int frameIndex;
 
-                // if the strategy failed (i.e. all frames are pinned) return error
-                if (pageFrame == NULL)
-                    return RC_WRITE_FAILED;
-                else 
+            // make sure the pageNum is not negative
+            switch (pageNum >= 0)
+            {
+                case true:
                 {
-                    // set the mapping from pageNum to frameIndex
-                    setValue(pageTabe, pageNum, pageFrame->frameIndex);
+                    int getValueResult = getValue(pageTabe, pageNum, &frameIndex);
+                    switch (getValueResult)
+                    {
+                        case 0:  // Page is already in a frame
+                            pageFrames[frameIndex].timeStamp = getTimeStamp(metadata);
+                            pageFrames[frameIndex].fixCount++;
+                            page->data = pageFrames[frameIndex].data;
+                            page->pageNum = pageNum;
+                            return RC_OK;
 
-                    // grow the file if needed
-                    ensureCapacity(pageNum + 1, &(metadata->pageFile));
+                        default:  // Page is not in a frame, use replacement strategy
+                            BM_PageFrame *pageFrame;
+                            switch (bm->strategy)
+                            {
+                                case RS_FIFO:
+                                    pageFrame = replacementFIFO(bm);
+                                    break;
+                                case RS_LRU:
+                                    pageFrame = replacementLRU(bm);
+                                    break;
+                                default:
+                                    return RC_IM_CONFIG_ERROR; // Configuration error if no strategy fits
+                            }
 
-                    // read data from disk
-                    readBlock(pageNum, &(metadata->pageFile), pageFrame->data);
-                    metadata->numRead++;
+                            // Check if the replacement strategy succeeded
+                            if (pageFrame == NULL)
+                                return RC_WRITE_FAILED;
 
-                    // set frame's metadata
-                    pageFrame->dirty = false;
-                    pageFrame->fixCount = 1;
-                    pageFrame->occupied = true;
-                    pageFrame->pageNum = pageNum;
-                    page->data = pageFrame->data;
-                    page->pageNum = pageNum;
-                    return RC_OK;
+                            // Successful replacement, setup new frame
+                            setValue(pageTabe, pageNum, pageFrame->frameIndex);
+                            ensureCapacity(pageNum + 1, &(metadata->pageFile));
+                            readBlock(pageNum, &(metadata->pageFile), pageFrame->data);
+                            metadata->numRead++;
+
+                            pageFrame->dirty = false;
+                            pageFrame->fixCount = 1;
+                            pageFrame->occupied = true;
+                            pageFrame->pageNum = pageNum;
+                            page->data = pageFrame->data;
+                            page->pageNum = pageNum;
+                            return RC_OK;
+                    }
                 }
+                default:
+                    return RC_IM_KEY_NOT_FOUND;  // pageNum is negative
             }
         }
-        else return RC_IM_KEY_NOT_FOUND;
+        default:
+            return RC_FILE_HANDLE_NOT_INIT;  // Management data not initialized
     }
-    else return RC_FILE_HANDLE_NOT_INIT;
 }
 
 /* Statistics Interface */
 
 PageNumber *getFrameContents (BM_BufferPool *const bm)
 {
-    // make sure the metadata was successfully initialized
-    if (bm->mgmtData != NULL) 
+    // Use switch-case to check if metadata is initialized
+    switch (bm->mgmtData != NULL) 
     {
-        BM_Metadata *metadata = (BM_Metadata *)bm->mgmtData;
-        BM_PageFrame *pageFrames = metadata->pageFrames;
-
-        // the user will be responsible for calling free
-        PageNumber *array = (PageNumber *)malloc(sizeof(PageNumber) * bm->numPages);
-        for (int i = 0; i < bm->numPages; i++)
+        case true:
         {
-            if (pageFrames[i].occupied)
-                array[i] = pageFrames[i].pageNum;
-            else array[i] = NO_PAGE;
+            BM_Metadata *metadata = (BM_Metadata *)bm->mgmtData;
+            BM_PageFrame *pageFrames = metadata->pageFrames;
+
+            // Allocate memory for the array; user is responsible for freeing it
+            PageNumber *array = (PageNumber *)malloc(sizeof(PageNumber) * bm->numPages);
+            int i = 0;  // Initialize loop counter for while loop
+            while (i < bm->numPages)
+            {
+                // Assign page number if frame is occupied, otherwise set to NO_PAGE
+                array[i] = pageFrames[i].occupied ? pageFrames[i].pageNum : NO_PAGE;
+                i++;  // Increment loop counter
+            }
+            return array;
         }
-        return array;
+
+        default:
+            return NULL;  // Return NULL if management data is not initialized
     }
-    else return NULL;
 }
 
 bool *getDirtyFlags (BM_BufferPool *const bm)
 {
-    // make sure the metadata was successfully initialized
-    if (bm->mgmtData != NULL) 
+    // Use switch-case to check if metadata is initialized
+    switch (bm->mgmtData != NULL) 
     {
-        BM_Metadata *metadata = (BM_Metadata *)bm->mgmtData;
-        BM_PageFrame *pageFrames = metadata->pageFrames;
-
-        // the user will be responsible for calling free
-        bool *array = (bool *)malloc(sizeof(bool) * bm->numPages);
-        for (int i = 0; i < bm->numPages; i++)
+        case true:
         {
-            if (pageFrames[i].occupied)
-                array[i] = pageFrames[i].dirty;
-            else array[i] = false;
+            BM_Metadata *metadata = (BM_Metadata *)bm->mgmtData;
+            BM_PageFrame *pageFrames = metadata->pageFrames;
+
+            // Allocate memory for the array; user is responsible for freeing it
+            bool *array = (bool *)malloc(sizeof(bool) * bm->numPages);
+            int i = 0;  // Initialize loop counter for while loop
+            while (i < bm->numPages)
+            {
+                // Set true if the frame is occupied and dirty, otherwise false
+                array[i] = pageFrames[i].occupied ? pageFrames[i].dirty : false;
+                i++;  // Increment loop counter
+            }
+            return array;
         }
-        return array;
+
+        default:
+            return NULL;  // Return NULL if management data is not initialized
     }
-    else return NULL;
 }
 
 int *getFixCounts (BM_BufferPool *const bm)
 {
-    // make sure the metadata was successfully initialized
-    if (bm->mgmtData != NULL) 
+    // Use switch-case to check if metadata is initialized
+    switch (bm->mgmtData != NULL) 
     {
-        BM_Metadata *metadata = (BM_Metadata *)bm->mgmtData;
-        BM_PageFrame *pageFrames = metadata->pageFrames;
-
-        // the user will be responsible for calling free
-        int *array = (int *)malloc(sizeof(int) * bm->numPages);
-        for (int i = 0; i < bm->numPages; i++)
+        case true:
         {
-            if (pageFrames[i].occupied)
-                array[i] = pageFrames[i].fixCount;
-            else array[i] = 0;
+            BM_Metadata *metadata = (BM_Metadata *)bm->mgmtData;
+            BM_PageFrame *pageFrames = metadata->pageFrames;
+
+            // Allocate memory for the array; user is responsible for freeing it
+            int *array = (int *)malloc(sizeof(int) * bm->numPages);
+            int i = 0;  // Initialize loop counter for while loop
+            while (i < bm->numPages)
+            {
+                // Set the fix count if the frame is occupied, otherwise set to 0
+                array[i] = pageFrames[i].occupied ? pageFrames[i].fixCount : 0;
+                i++;  // Increment loop counter
+            }
+            return array;
         }
-        return array;
+
+        default:
+            return NULL;  // Return NULL if management data is not initialized
     }
-    else return NULL;
 }
 
 int getNumReadIO (BM_BufferPool *const bm)
 {
-    // make sure the metadata was successfully initialized
-    if (bm->mgmtData != NULL) 
+    // Use switch-case to check if metadata is initialized
+    switch (bm->mgmtData != NULL) 
     {
-        BM_Metadata *metadata = (BM_Metadata *)bm->mgmtData;
-        return metadata->numRead;
+        case true:
+        {
+            BM_Metadata *metadata = (BM_Metadata *)bm->mgmtData;
+            return metadata->numRead;
+        }
+
+        default:
+            return 0;  // Return 0 if management data is not initialized
     }
-    else return 0;
 }
 
 int getNumWriteIO (BM_BufferPool *const bm)
 {
-    // make sure the metadata was successfully initialized
-    if (bm->mgmtData != NULL) 
+    // Use switch-case to check if metadata is initialized
+    switch (bm->mgmtData != NULL) 
     {
-        BM_Metadata *metadata = (BM_Metadata *)bm->mgmtData;
-        return metadata->numWrite;
+        case true:
+        {
+            BM_Metadata *metadata = (BM_Metadata *)bm->mgmtData;
+            return metadata->numWrite;
+        }
+
+        default:
+            return 0;  // Return 0 if management data is not initialized
     }
-    else return 0;
 }
+
 
 /* Replacement Policies */
 
@@ -391,26 +454,30 @@ BM_PageFrame *replacementFIFO(BM_BufferPool *const bm)
     BM_PageFrame *pageFrames = metadata->pageFrames;
 
     int firstIndex = metadata->queueIndex;
-    int currentIndex = metadata->queueIndex;
+    int currentIndex = firstIndex;
 
-    // keep cycling in FIFO order until a frame is found that is not pinned
-    do 
+    // Keep cycling in FIFO order until a frame is found that is not pinned
+    while (true)
     {
         currentIndex = (currentIndex + 1) % bm->numPages;
         if (pageFrames[currentIndex].fixCount == 0)
             break;
+        if (currentIndex == firstIndex)
+            break;
     }
-    while (currentIndex != firstIndex);
 
-    // put the index back into the metadata pointer
+    // Update the index back into the metadata
     metadata->queueIndex = currentIndex;
 
-    // ensure we did not cycle into a pinned frame (i.e. all frames are pinned) or return NULL
-    if (pageFrames[currentIndex].fixCount == 0)
-        return getAfterEviction(bm, currentIndex);
-    else return NULL;
+    // Check if we did not cycle into a pinned frame (i.e., all frames are pinned)
+    switch (pageFrames[currentIndex].fixCount) 
+    {
+        case 0:
+            return getAfterEviction(bm, currentIndex);
+        default:
+            return NULL;
+    }
 }
-
 BM_PageFrame *replacementLRU(BM_BufferPool *const bm)
 {
     BM_Metadata *metadata = (BM_Metadata *)bm->mgmtData;
@@ -418,29 +485,42 @@ BM_PageFrame *replacementLRU(BM_BufferPool *const bm)
 
     TimeStamp min = UINT_MAX;
     int minIndex = -1;
+    int i = 0;  // Initialize loop counter for while loop
 
-    // find unpinned frame with smallest timestamp
-    for (int i = 0; i < bm->numPages; i++)
+    // Find unpinned frame with smallest timestamp
+    while (i < bm->numPages)
     {
-        if (pageFrames[i].fixCount == 0 && pageFrames[i].timeStamp < min) 
+        if (pageFrames[i].fixCount == 0 && pageFrames[i].timeStamp < min)
         {
             min = pageFrames[i].timeStamp;
             minIndex = i;
         }
+        i++;  // Increment loop counter
     }
-    
-    // if all frames were pinned, return NULL
-    if (minIndex == -1) 
-        return NULL;
-    else return getAfterEviction(bm, minIndex);
+
+    // Use switch-case to handle the case where all frames might be pinned
+    switch (minIndex)
+    {
+        case -1:
+            return NULL;  // All frames were pinned
+        default:
+            return getAfterEviction(bm, minIndex);
+    }
 }
 
 /* Helpers */
 
 TimeStamp getTimeStamp(BM_Metadata *metadata)
 {
-    // increment the global timestamp after returning it to be assigned to a frame
-    return metadata->timeStamp++;
+    // A switch-case example that logically does nothing different but demonstrates the syntax
+    switch (metadata != NULL)
+    {
+        case true:
+            return metadata->timeStamp++;
+        default:
+            // This case should logically never happen if the function is used correctly
+            return 0;  // Returning a default timestamp in case of an error (unexpected)
+    }
 }
 
 BM_PageFrame *getAfterEviction(BM_BufferPool *const bm, int frameIndex)
@@ -449,21 +529,31 @@ BM_PageFrame *getAfterEviction(BM_BufferPool *const bm, int frameIndex)
     BM_PageFrame *pageFrames = metadata->pageFrames;
     HT_TableHandle *pageTabe = &(metadata->pageTable);
 
-    // update timestamp
+    // Update timestamp
     pageFrames[frameIndex].timeStamp = getTimeStamp(metadata);
-    if (pageFrames[frameIndex].occupied)
-    {
-        // remove old mapping
-        removePair(pageTabe, pageFrames[frameIndex].pageNum);
 
-        // write old frame back to disk if dirty
-        if (pageFrames[frameIndex].dirty) 
-        {
-            writeBlock(pageFrames[frameIndex].pageNum, &(metadata->pageFile), pageFrames[frameIndex].data);
-            metadata->numWrite++;
-        }
+    // Use switch-case to handle the occupied status of the page frame
+    switch (pageFrames[frameIndex].occupied)
+    {
+        case true:
+            // Remove old mapping
+            removePair(pageTabe, pageFrames[frameIndex].pageNum);
+
+            // Write old frame back to disk if it's dirty
+            switch (pageFrames[frameIndex].dirty)
+            {
+                case true:
+                    writeBlock(pageFrames[frameIndex].pageNum, &(metadata->pageFile), pageFrames[frameIndex].data);
+                    metadata->numWrite++;
+                    break;
+                default:
+                    break;
+            }
+            break;
+        default:
+            break;
     }
 
-    // return evicted frame (called must deal with setting the page's metadata)
+    // Return the evicted frame (caller must deal with setting the page's metadata)
     return &(pageFrames[frameIndex]);
 }

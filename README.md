@@ -39,7 +39,7 @@ The `RM_SystemCatalog` is a fixed size struct that has 3 `int` metadata as :
   - the number of tables that can be created is limited by `MAX_NUM_TABLES` 
 
 
-Lastly, `RM_SystemCatalog` has an array of `RM_SystemSchema` which defines the system table schemas saved on the catalog page. Its attribute, counts, key counts, and name length are limited so that the page can simply be casted for access (instead of having variable lengths). The `RM_SystemSchema` also hold a pointer to its page handle in case it is open (or `NULL` if closed).
+Lastly, `RM_SystemCatalog` has an array of `ResourceManagerSchema` which defines the system table schemas saved on the catalog page. Its attribute, counts, key counts, and name length are limited so that the page can simply be casted for access (instead of having variable lengths). The `ResourceManagerSchema` also hold a pointer to its page handle in case it is open (or `NULL` if closed).
 
 The page layout has a `RM_PageHeader` which has 3 `int` metadata as:
 
